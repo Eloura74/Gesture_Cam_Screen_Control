@@ -8,6 +8,7 @@ import os
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from screeninfo import get_monitors
+import pygetwindow as gw
 
 # --- CONFIGURATION ---
 
@@ -121,21 +122,27 @@ class EyeGestureController:
     def detect_hand_gesture(self, landmarks):
         thumb_tip = landmarks[4]
         index_tip = landmarks[8]
+        middle_tip = landmarks[12]
         
         # Distance Pouce-Index (Zoom/Scroll)
         pinch_dist = math.hypot(index_tip.x - thumb_tip.x, index_tip.y - thumb_tip.y)
         
         # Doigts levés ?
         index_up = index_tip.y < landmarks[6].y
-        middle_up = landmarks[12].y < landmarks[10].y
+        middle_up = middle_tip.y < landmarks[10].y
         ring_up = landmarks[16].y < landmarks[14].y
         pinky_up = landmarks[20].y < landmarks[18].y
         
         if pinch_dist < 0.05:
             return "PINCH", index_tip
         
+        # Index seul levé
         if index_up and not middle_up and not ring_up and not pinky_up:
             return "POINT", index_tip
+
+        # Index + Majeur levés (V de la victoire)
+        if index_up and middle_up and not ring_up and not pinky_up:
+            return "TWO_FINGERS", index_tip
             
         if not index_up and not middle_up and not ring_up and not pinky_up:
             return "FIST", None
@@ -146,14 +153,92 @@ class EyeGestureController:
         if not self.active_monitor:
             return
 
+        # --- LOGIQUE PAR ECRAN ---
+
+        # ECRAN 3 (Films) : Poing = Pause (Espace)
+        if self.current_screen == "ECRAN_3_HAUT":
+            if gesture == "FIST":
+                # Debounce simple pour éviter de spammer la pause
+                current_time = time.time()
+                if not hasattr(self, 'last_pause_time'):
+                    self.last_pause_time = 0
+                
+                if current_time - self.last_pause_time > 1.0: # 1 seconde de délai
+                    # Tenter d'activer la fenêtre sous le curseur (ou au centre)
+                    try:
+                        # On vise le centre de l'écran 3
+                        center_x = self.active_monitor.x + self.active_monitor.width // 2
+                        center_y = self.active_monitor.y + self.active_monitor.height // 2
+                        
+                        # Récupérer les fenêtres à cet endroit
+                        windows = gw.getWindowsAt(center_x, center_y)
+                        target_window = None
+                        
+                        # Chercher une fenêtre qui n'est PAS notre application
+                        if windows:
+                            for w in windows:
+                                if "Eye & Gesture Control" not in w.title:
+                                    target_window = w
+                                    break
+                        
+                        if target_window:
+                            print(f"Activating: {target_window.title}")
+                            try:
+                                target_window.activate()
+                            except:
+                                # Parfois activate() échoue si minimisé, on essaie restore
+                                if target_window.isMinimized:
+                                    target_window.restore()
+                                target_window.activate()
+                                
+                            time.sleep(0.1) # Petit délai pour le focus
+                            pyautogui.press('space')
+                            print("PAUSE/PLAY (Space sent)")
+                        else:
+                            # Fallback : Clic au centre pour donner le focus brutalement
+                            print("Fallback: Click at center")
+                            pyautogui.click(center_x, center_y)
+                            time.sleep(0.1)
+                            pyautogui.press('space')
+                            
+                    except Exception as e:
+                        print(f"Erreur focus: {e}")
+                        # Fallback ultime
+                        pyautogui.press('space')
+                        
+                    self.last_pause_time = current_time
+            return # On ne fait rien d'autre sur cet écran pour l'instant
+
+        # ECRAN 1 (Web) : Scroll spécifique
+        if self.current_screen == "ECRAN_1_GAUCHE":
+            # POINT (Index) : Bouge la souris (Standard)
+            if gesture == "POINT" and position:
+                screen_x = np.interp(position.x, [0, 1], [0, self.active_monitor.width])
+                screen_y = np.interp(position.y, [0, 1], [0, self.active_monitor.height])
+                
+                target_x = self.active_monitor.x + screen_x
+                target_y = self.active_monitor.y + screen_y
+                
+                curr_x = self.prev_mouse_x + (target_x - self.prev_mouse_x) * SMOOTHING_FACTOR
+                curr_y = self.prev_mouse_y + (target_y - self.prev_mouse_y) * SMOOTHING_FACTOR
+                
+                pyautogui.moveTo(curr_x, curr_y)
+                self.prev_mouse_x, self.prev_mouse_y = curr_x, curr_y
+            
+            # TWO_FINGERS (Index+Majeur) : Scroll HAUT
+            elif gesture == "TWO_FINGERS":
+                pyautogui.scroll(SCROLL_SPEED)
+                
+            # PINCH (Pince) : Scroll BAS
+            elif gesture == "PINCH":
+                pyautogui.scroll(-SCROLL_SPEED)
+            return
+
+        # --- COMPORTEMENT PAR DEFAUT (Autres écrans) ---
         if gesture == "POINT" and position:
-            # Coordonnées relatives à l'écran actif
-            # CORRECTION: Inversion de l'axe X supprimée (0 -> 0, 1 -> Width)
-            # car l'image est déjà miroir (cv2.flip)
             screen_x = np.interp(position.x, [0, 1], [0, self.active_monitor.width])
             screen_y = np.interp(position.y, [0, 1], [0, self.active_monitor.height])
             
-            # Coordonnées absolues (Virtual Desktop)
             target_x = self.active_monitor.x + screen_x
             target_y = self.active_monitor.y + screen_y
             
