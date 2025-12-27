@@ -23,7 +23,8 @@ SCREEN_CENTERS = {
 SMOOTHING_FACTOR = 0.5
 SCROLL_SPEED = 20
 VOLUME_DEBOUNCE = 0.1
-KNOB_SENSITIVITY = 5 # Plus sensible (Pixels de scroll par degré)
+KNOB_SENSITIVITY = 5
+AFK_TIMEOUT = 2.0 # Secondes avant pause auto
 
 class EyeGestureController:
     def __init__(self):
@@ -69,6 +70,11 @@ class EyeGestureController:
         self.knob_active = False
         self.knob_ref_angle = 0
         self.knob_accumulated_scroll = 0
+        
+        # État Smart Pause
+        self.last_face_time = time.time()
+        self.is_paused_afk = False
+        self.last_pause_action_time = 0
 
     def update_active_monitor(self, screen_name):
         if screen_name in self.monitor_mapping:
@@ -94,6 +100,9 @@ class EyeGestureController:
                 thickness = -1
             cv2.rectangle(debug_img, (x, y), (x+w, y+h), color, thickness)
             cv2.putText(debug_img, name.split('_')[2], (x+5, y+h//2), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            
+        if self.is_paused_afk:
+            cv2.putText(debug_img, "AFK PAUSE", (150, 280), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
         cv2.imshow("Radar Ecrans", debug_img)
 
@@ -140,50 +149,77 @@ class EyeGestureController:
         pinky_tip = landmarks[20]
         wrist = landmarks[0]
         
-        # Helper pour savoir si un doigt est étendu (Distance Bout-Poignet > Distance Jointure-Poignet)
         def is_extended(tip, joint):
             return math.hypot(tip.x - wrist.x, tip.y - wrist.y) > math.hypot(joint.x - wrist.x, joint.y - wrist.y)
 
-        # On utilise PIP (6, 10, 14, 18) pour les doigts et IP (3) pour le pouce
-        thumb_extended = is_extended(thumb_tip, landmarks[2]) # Comparé au MCP pour le pouce
+        thumb_extended = is_extended(thumb_tip, landmarks[2])
         index_extended = is_extended(index_tip, landmarks[6])
         middle_extended = is_extended(middle_tip, landmarks[10])
         ring_extended = is_extended(ring_tip, landmarks[14])
         pinky_extended = is_extended(pinky_tip, landmarks[18])
 
-        # Distance Pouce-Index (Zoom/Scroll)
         pinch_dist = math.hypot(index_tip.x - thumb_tip.x, index_tip.y - thumb_tip.y)
         
-        # Calcul du Roll (Inclinaison de la main)
         dx = middle_tip.x - wrist.x
         dy = middle_tip.y - wrist.y
         roll_angle = math.degrees(math.atan2(dx, -dy))
         
-        # PINCH (Prioritaire)
         if pinch_dist < 0.05:
             return "PINCH", index_tip, roll_angle
         
-        # NOUVEAU : THREE_FINGERS (Pouce + Index + Majeur levés) -> Molette
         if thumb_extended and index_extended and middle_extended and not ring_extended and not pinky_extended:
             return "THREE_FINGERS", index_tip, roll_angle
 
-        # POINT (Index seul)
         if index_extended and not middle_extended and not ring_extended and not pinky_extended:
             return "POINT", index_tip, roll_angle
 
-        # TWO_FINGERS (Index + Majeur)
         if index_extended and middle_extended and not ring_extended and not pinky_extended:
             return "TWO_FINGERS", index_tip, roll_angle
             
-        # FIST (Poing)
         if not index_extended and not middle_extended and not ring_extended and not pinky_extended:
             return "FIST", None, roll_angle
             
-        # OPEN_PALM (Main ouverte)
         if index_extended and middle_extended and ring_extended and pinky_extended:
             return "OPEN_PALM", None, roll_angle
             
         return "NONE", None, roll_angle
+
+    def trigger_play_pause(self):
+        """Active la fenêtre sur l'écran 3 et appuie sur Espace"""
+        # On trouve le moniteur 3
+        monitor_idx = self.monitor_mapping.get("ECRAN_3_HAUT")
+        if monitor_idx is None or monitor_idx >= len(self.monitors):
+            return
+
+        monitor = self.monitors[monitor_idx]
+        center_x = monitor.x + monitor.width // 2
+        center_y = monitor.y + monitor.height // 2
+
+        try:
+            windows = gw.getWindowsAt(center_x, center_y)
+            target_window = None
+            if windows:
+                for w in windows:
+                    if "Eye & Gesture Control" not in w.title:
+                        target_window = w
+                        break
+            
+            if target_window:
+                try:
+                    if target_window.isMinimized: target_window.restore()
+                    target_window.activate()
+                except: pass
+                time.sleep(0.1)
+                pyautogui.press('space')
+                print("SMART PAUSE/PLAY (Window)")
+            else:
+                pyautogui.click(center_x, center_y)
+                time.sleep(0.1)
+                pyautogui.press('space')
+                print("SMART PAUSE/PLAY (Fallback Click)")
+        except Exception as e:
+            print(f"Erreur Smart Pause: {e}")
+            pyautogui.press('space')
 
     def control_mouse(self, gesture, position, roll_angle, image=None):
         if not self.active_monitor:
@@ -191,35 +227,12 @@ class EyeGestureController:
 
         # --- ECRAN 3 (Films) ---
         if self.current_screen == "ECRAN_3_HAUT":
-            self.knob_active = False # Reset knob
+            self.knob_active = False 
             if gesture == "FIST":
                 current_time = time.time()
-                if not hasattr(self, 'last_pause_time'): self.last_pause_time = 0
-                if current_time - self.last_pause_time > 1.0:
-                    try:
-                        center_x = self.active_monitor.x + self.active_monitor.width // 2
-                        center_y = self.active_monitor.y + self.active_monitor.height // 2
-                        windows = gw.getWindowsAt(center_x, center_y)
-                        target_window = None
-                        if windows:
-                            for w in windows:
-                                if "Eye & Gesture Control" not in w.title:
-                                    target_window = w
-                                    break
-                        if target_window:
-                            try:
-                                if target_window.isMinimized: target_window.restore()
-                                target_window.activate()
-                            except: pass
-                            time.sleep(0.1)
-                            pyautogui.press('space')
-                        else:
-                            pyautogui.click(center_x, center_y)
-                            time.sleep(0.1)
-                            pyautogui.press('space')
-                    except Exception as e:
-                        pyautogui.press('space')
-                    self.last_pause_time = current_time
+                if current_time - self.last_pause_action_time > 1.0:
+                    self.trigger_play_pause()
+                    self.last_pause_action_time = current_time
             
             elif gesture == "OPEN_PALM":
                 current_time = time.time()
@@ -235,59 +248,30 @@ class EyeGestureController:
         # --- ECRAN 1 (Web) ---
         if self.current_screen == "ECRAN_1_GAUCHE":
             if gesture == "THREE_FINGERS" and position:
-                # MODE JOYSTICK (Pouce + Index + Majeur)
-                # Inclinaison maintenue = Scroll continu
-                
-                # Seuil d'activation (en degrés)
                 DEADZONE = 15
-                
-                # Scroll Bas (Rotation Droite)
                 if roll_angle > DEADZONE:
-                    # Vitesse proportionnelle à l'angle
-                    intensity = (roll_angle - DEADZONE) / 5 # Facteur d'accélération
+                    intensity = (roll_angle - DEADZONE) / 5
                     speed = int(SCROLL_SPEED * intensity)
                     pyautogui.scroll(-speed)
-                    
-                # Scroll Haut (Rotation Gauche)
                 elif roll_angle < -DEADZONE:
                     intensity = (abs(roll_angle) - DEADZONE) / 5
                     speed = int(SCROLL_SPEED * intensity)
                     pyautogui.scroll(speed)
                 
-                # DESSIN UI
                 if image is not None:
                     h, w, _ = image.shape
                     cx, cy = int(position.x * w), int(position.y * h)
-                    
-                    # Couleur change selon l'activation
-                    color = (0, 255, 255) # Jaune (Neutre)
-                    if abs(roll_angle) > DEADZONE:
-                        color = (0, 255, 0) # Vert (Actif)
-                        
-                    # Cercle extérieur
+                    color = (0, 255, 255)
+                    if abs(roll_angle) > DEADZONE: color = (0, 255, 0)
                     cv2.circle(image, (cx, cy), 45, color, 2)
-                    
-                    # Indicateur de rotation (Aiguille)
                     rad = math.radians(roll_angle - 90)
                     ex = int(cx + 45 * math.cos(rad))
                     ey = int(cy + 45 * math.sin(rad))
                     cv2.line(image, (cx, cy), (ex, ey), color, 2)
-                    
-                    # Zones mortes (visuel)
-                    rad_p = math.radians(DEADZONE - 90)
-                    rad_m = math.radians(-DEADZONE - 90)
-                    ex_p = int(cx + 35 * math.cos(rad_p))
-                    ey_p = int(cy + 35 * math.sin(rad_p))
-                    ex_m = int(cx + 35 * math.cos(rad_m))
-                    ey_m = int(cy + 35 * math.sin(rad_m))
-                    cv2.line(image, (cx, cy), (ex_p, ey_p), (100, 100, 100), 1)
-                    cv2.line(image, (cx, cy), (ex_m, ey_m), (100, 100, 100), 1)
-                    
                     cv2.putText(image, "SCROLL", (cx-30, cy-55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
             else:
                 self.knob_active = False
-                
                 if gesture == "POINT" and position:
                     screen_x = np.interp(position.x, [0, 1], [0, self.active_monitor.width])
                     screen_y = np.interp(position.y, [0, 1], [0, self.active_monitor.height])
@@ -326,7 +310,16 @@ class EyeGestureController:
             
             # Head Tracking
             face_result = self.face_landmarker.detect(mp_image)
+            current_time = time.time()
+            
             if face_result.face_landmarks:
+                self.last_face_time = current_time
+                # Si on était en pause AFK, on reprend
+                if self.is_paused_afk:
+                    print("Visage retrouvé : RESUME")
+                    self.trigger_play_pause()
+                    self.is_paused_afk = False
+                
                 landmarks = face_result.face_landmarks[0]
                 yaw, pitch = self.get_head_pose(image.shape, landmarks)
                 new_screen = self.determine_screen(yaw, pitch)
@@ -336,23 +329,34 @@ class EyeGestureController:
                     self.update_active_monitor(new_screen)
                 
                 cv2.putText(image, f"Screen: {self.current_screen}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            else:
+                # Pas de visage
+                if not self.is_paused_afk and (current_time - self.last_face_time > AFK_TIMEOUT):
+                    print("AFK détecté : PAUSE")
+                    self.trigger_play_pause()
+                    self.is_paused_afk = True
 
             # Hand Tracking
             hand_result = self.hand_landmarker.detect(mp_image)
             if hand_result.hand_landmarks:
-                for landmarks in hand_result.hand_landmarks:
-                    gesture, pos, roll = self.detect_hand_gesture(landmarks)
+                for i, landmarks in enumerate(hand_result.hand_landmarks):
+                    # FILTRE MAIN DROITE
+                    # handedness[0][i] correspond à la main i
+                    # Note: MediaPipe Handedness est inversé en mode Selfie (miroir).
+                    # "Left" correspond à la main DROITE physique de l'utilisateur.
+                    handedness = hand_result.handedness[i][0]
                     
-                    # Dessin des points (sauf si Knob actif pour clarté)
-                    if not (self.current_screen == "ECRAN_1_GAUCHE" and gesture == "THREE_FINGERS"):
-                        for lm in landmarks:
-                            x, y = int(lm.x * image.shape[1]), int(lm.y * image.shape[0])
-                            cv2.circle(image, (x, y), 5, (255, 0, 0), -1)
-                    
-                    cv2.putText(image, f"Gesture: {gesture}", (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
-                    
-                    # On passe l'image pour dessiner le Knob
-                    self.control_mouse(gesture, pos, roll, image)
+                    if handedness.category_name == "Left":
+                        gesture, pos, roll = self.detect_hand_gesture(landmarks)
+                        
+                        # Dessin des points
+                        if not (self.current_screen == "ECRAN_1_GAUCHE" and gesture == "THREE_FINGERS"):
+                            for lm in landmarks:
+                                x, y = int(lm.x * image.shape[1]), int(lm.y * image.shape[0])
+                                cv2.circle(image, (x, y), 5, (255, 0, 0), -1)
+                        
+                        cv2.putText(image, f"Gesture: {gesture}", (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+                        self.control_mouse(gesture, pos, roll, image)
 
             # Visual Debug
             self.draw_debug_window()
