@@ -34,7 +34,8 @@ Des gestes spécifiques déclenchent des actions différentes selon l'écran act
 3.  Créer un environnement virtuel (optionnel mais recommandé) :
     ```cmd
     py -3.12 -m venv venv
-    venv\Scripts\activate
+    venv312\Scripts\activate
+
     ```
 4.  Installer les dépendances :
     ```cmd
