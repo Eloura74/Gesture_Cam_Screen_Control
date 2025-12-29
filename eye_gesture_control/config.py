@@ -11,13 +11,20 @@ VOLUME_DEBOUNCE = 0.2
 AFK_TIMEOUT = 5.0
 PAUSE_COOLDOWN = 1.5  # Temps min entre deux actions
 
-# --- PALETTE "CYBER-GLASS" (BGR) ---
-C_CYAN_DIM = (100, 100, 0)
-C_CYAN_BRIGHT = (255, 255, 100)
-C_MAGENTA_DEEP = (100, 0, 100)
-C_MAGENTA_NEON = (255, 0, 255)
-C_BLUE_TECH = (255, 150, 0)
-C_GREEN_DATA = (50, 255, 100)
-C_ALERT_RED = (0, 0, 255)
-C_WHITE = (240, 240, 255)
-C_GLASS_DARK = (10, 15, 20)
+# --- PALETTE "PRO CYBER-GLASS" (BGR) ---
+# Couleurs plus sobres, moins saturées, style "Interface Militaire / Sci-Fi"
+C_BACKGROUND_DARK = (15, 15, 20)      # Fond très sombre presque noir
+C_GLASS = (30, 35, 40)                # Verre fumé
+C_GLASS_BORDER = (60, 70, 80)         # Bordure subtile
+C_ACCENT_CYAN = (200, 200, 0)         # Cyan "Tech" (BGR: Blue-Green-Red -> 200,200,0 est Teal/Cyan)
+C_ACCENT_ORANGE = (0, 140, 255)       # Orange "Alert" (BGR)
+C_TEXT_MAIN = (220, 230, 240)         # Blanc cassé bleuté
+C_TEXT_DIM = (120, 130, 140)          # Gris bleuté
+C_SUCCESS = (50, 200, 50)             # Vert "Valid"
+C_WARNING = (0, 165, 255)             # Orange
+C_DANGER = (50, 50, 200)              # Rouge
+
+# --- BUTTONS CONFIG ---
+BTN_HEIGHT = 40
+BTN_WIDTH = 120
+BTN_MARGIN = 10
