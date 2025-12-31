@@ -57,6 +57,10 @@ class EyeGestureController:
         self.mouse_x = 0
         self.mouse_y = 0
         self.click_event = None
+        
+        # Stockage temporaire pour le recentrage
+        self.last_raw_yaw = 0
+        self.last_raw_pitch = 0
 
         print(f"Système initialisé. {len(self.calibration.monitors)} moniteurs détectés.")
 
@@ -83,13 +87,18 @@ class EyeGestureController:
                 if action == "CALIBRATE":
                     self.calibration.calibration_mode = not self.calibration.calibration_mode
                     self.calibration.calibration_step = 0
+                
+                elif action == "RECENTER":
+                    # Appel de la fonction de recentrage avec les dernières valeurs brutes
+                    self.calibration.recenter(self.last_raw_yaw, self.last_raw_pitch)
+                    
                 elif action == "PAUSE":
                     self.system_paused = not self.system_paused
                     # Update button text
                     for btn in self.ui.buttons:
                         if btn.action_code == "PAUSE":
                             btn.text = "RESUME" if self.system_paused else "PAUSE APP"
-                            btn.color_base = C_ACCENT_ORANGE if self.system_paused else C_GLASS
+                            btn.color_base = C_ACCENT_WARN if self.system_paused else C_BG_LIGHT
                     
                     self.log_action(f"SYSTEM {'PAUSED' if self.system_paused else 'RESUMED'}")
                     
@@ -138,13 +147,10 @@ class EyeGestureController:
         if gesture == "THREE_FINGERS" and position:
             speed = self.scroll_handler.handle(roll_angle)
         
-        # Feedback visuel pour le scroll
-        if image is not None and gesture == "THREE_FINGERS":
-             self.ui.draw_gesture_feedback(image, gesture, position, landmarks, roll_angle, speed)
-             return
-        
         if gesture == "POINT" and position:
             self.mouse_handler.handle(position, self.active_monitor)
+        
+        return speed # Retourne la vitesse pour l'affichage
 
     def shutdown(self):
         """Libère proprement toutes les ressources."""
@@ -184,19 +190,9 @@ class EyeGestureController:
 
                 # Si le système est en pause, on affiche juste l'image et l'UI, sans processing IA
                 if self.system_paused:
-                    # Overlay Pause
-                    overlay = image.copy()
-                    cv2.rectangle(overlay, (0,0), (image.shape[1], image.shape[0]), (0,0,0), -1)
-                    cv2.addWeighted(overlay, 0.7, image, 0.3, 0, image)
+                    # On utilise la nouvelle méthode draw_ui même en pause, mais avec des params vides
+                    image = self.ui.draw_ui(image, fps, 0, 0, "SYSTEM PAUSED", self.start_time, "PAUSED", False, False, 0, None)
                     
-                    # UI de base (Header + Boutons pour pouvoir Resume)
-                    self.ui.draw_hud_header(image, fps)
-                    
-                    # Gros texte PAUSE
-                    h, w, _ = image.shape
-                    cv2.putText(image, "SYSTEM PAUSED", (w//2 - 200, h//2), cv2.FONT_HERSHEY_SIMPLEX, 1.5, C_ACCENT_ORANGE, 3)
-                    cv2.putText(image, "Click RESUME to continue", (w//2 - 180, h//2 + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, C_TEXT_MAIN, 1)
-
                     # Interaction UI (pour le bouton Resume)
                     self.handle_ui_interactions()
                     
@@ -217,6 +213,7 @@ class EyeGestureController:
                     raise
                 
                 yaw_stable, pitch_stable = 0, 0
+                face_landmarks = None
 
                 if face_result and face_result.face_landmarks:
                     self.last_face_detected_time = time.time()
@@ -225,23 +222,28 @@ class EyeGestureController:
                         self.media_handler.trigger_play_pause(self.active_monitor)
                         self.is_afk = False
 
-                    landmarks = face_result.face_landmarks[0]
-                    self.ui.draw_face_hud(image, landmarks, self.is_afk, self.calibration.calibration_mode)
+                    face_landmarks = face_result.face_landmarks[0]
+                    # Note: draw_face_hud est maintenant géré dans draw_ui
 
-                    raw_yaw, raw_pitch = self.head_tracker.get_head_pose(image.shape, landmarks)
-                    yaw_stable = self.yaw_stabilizer.update(raw_yaw)
-                    pitch_stable = self.pitch_stabilizer.update(raw_pitch)
+                    raw_yaw, raw_pitch = self.head_tracker.get_head_pose(image.shape, face_landmarks)
+                    
+                    # Stockage pour le recentrage
+                    self.last_raw_yaw = raw_yaw
+                    self.last_raw_pitch = raw_pitch
+
+                    # Application de l'offset (Quick Recenter)
+                    corrected_yaw, corrected_pitch = self.calibration.get_corrected_values(raw_yaw, raw_pitch)
+
+                    # Lissage
+                    yaw_stable = self.yaw_stabilizer.update(corrected_yaw)
+                    pitch_stable = self.pitch_stabilizer.update(corrected_pitch)
 
                     if not self.calibration.calibration_mode:
                         new_screen = self.determine_screen(yaw_stable, pitch_stable)
                         if new_screen != self.current_screen:
                             self.current_screen = new_screen
                             self.update_active_monitor(new_screen)
-
-                            # Reset stabilizers
                             self.mouse_handler.reset_stabilizers()
-
-                            # Reset lock poing
                             self.media_handler.reset_lock()
 
                 else:
@@ -256,21 +258,39 @@ class EyeGestureController:
                 except KeyboardInterrupt:
                     raise
 
+                gesture = "NONE"
+                pos = None
+                roll = 0
+                scroll_speed = 0
+                hand_landmarks = None
+
                 if hand_result and hand_result.hand_landmarks and not self.calibration.calibration_mode:
-                    landmarks = hand_result.hand_landmarks[0]
-                    gesture, pos, roll = self.hand_tracker.detect_hand_gesture(landmarks)
+                    hand_landmarks = hand_result.hand_landmarks[0]
+                    gesture, pos, roll = self.hand_tracker.detect_hand_gesture(hand_landmarks)
                     
                     # Process Actions
-                    self.process_actions(gesture, pos, roll, landmarks, image)
-                    
-                    # Draw Gesture Feedback (si pas déjà fait dans process_actions pour THREE_FINGERS)
-                    if gesture != "THREE_FINGERS":
-                        self.ui.draw_gesture_feedback(image, gesture, pos, landmarks, roll)
+                    scroll_speed = self.process_actions(gesture, pos, roll, hand_landmarks, image)
 
-                # --- UI LAYERS ---
-                self.ui.draw_hud_header(image, fps)
-                self.ui.draw_hud_sidebar(image, yaw_stable, pitch_stable, self.last_log_message, self.start_time)
-                self.ui.draw_status_overlay(image, self.current_screen, self.calibration.calibration_mode, self.is_afk, self.hand_tracker.last_swipe_display_time, self.hand_tracker.last_swipe_direction)
+                # --- UI LAYERS (NOUVEAU) ---
+                # On passe tout à draw_ui qui gère le rendu PIL
+                image = self.ui.draw_ui(
+                    image, 
+                    fps, 
+                    yaw_stable, 
+                    pitch_stable, 
+                    self.last_log_message, 
+                    self.start_time, 
+                    self.current_screen, 
+                    self.calibration.calibration_mode, 
+                    self.is_afk, 
+                    self.hand_tracker.last_swipe_display_time, 
+                    self.hand_tracker.last_swipe_direction,
+                    landmarks=face_landmarks, # On passe les landmarks visage pour le HUD
+                    gesture=gesture,
+                    pos=pos,
+                    roll=roll,
+                    speed=scroll_speed
+                )
 
                 # --- Handle UI Interactions (Clicks) ---
                 self.handle_ui_interactions()
@@ -289,6 +309,8 @@ class EyeGestureController:
                 elif key == ord('m'):
                     is_paused = self.mouse_handler.toggle_pause()
                     self.log_action(f"MOUSE {'LOCKED' if is_paused else 'UNLOCKED'}")
+                elif key == ord('r'): # Raccourci clavier pour Recenter
+                    self.calibration.recenter(self.last_raw_yaw, self.last_raw_pitch)
 
         except KeyboardInterrupt:
             print("\n[EXIT] KeyboardInterrupt reçu, arrêt propre...")

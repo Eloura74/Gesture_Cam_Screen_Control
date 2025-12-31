@@ -24,6 +24,10 @@ class CalibrationManager:
         self.calibration_mode = False
         self.calibration_step = 0
         self.calibration_keys = list(self.screen_centers.keys())
+        
+        # Offsets dynamiques (Quick Recenter)
+        self.yaw_offset = 0
+        self.pitch_offset = 0
 
     def log(self, message):
         if self.log_callback:
@@ -52,8 +56,9 @@ class CalibrationManager:
     def calibrate_step(self, yaw, pitch):
         if self.calibration_step < len(self.calibration_keys):
             screen_name = self.calibration_keys[self.calibration_step]
-            self.screen_centers[screen_name]["yaw"] = yaw
-            self.screen_centers[screen_name]["pitch"] = pitch
+            # On sauvegarde les valeurs BRUTES (sans offset) pour la calibration absolue
+            self.screen_centers[screen_name]["yaw"] = yaw - self.yaw_offset
+            self.screen_centers[screen_name]["pitch"] = pitch - self.pitch_offset
             self.log(f"CALIB SAVED: {screen_name}")
             self.calibration_step += 1
             time.sleep(0.5)
@@ -62,6 +67,19 @@ class CalibrationManager:
             self.calibration_mode = False
             self.save_calibration()
             self.log("CALIBRATION COMPLETE")
+
+    def recenter(self, current_yaw, current_pitch):
+        """Recalcule l'offset pour que la position actuelle corresponde à l'écran CENTRAL"""
+        target_yaw = self.screen_centers["ECRAN_2_CENTRE"]["yaw"]
+        target_pitch = self.screen_centers["ECRAN_2_CENTRE"]["pitch"]
+        
+        self.yaw_offset = current_yaw - target_yaw
+        self.pitch_offset = current_pitch - target_pitch
+        self.log(f"RECENTERED (Offset: Y={self.yaw_offset:.1f}, P={self.pitch_offset:.1f})")
+
+    def get_corrected_values(self, raw_yaw, raw_pitch):
+        """Retourne les angles corrigés par l'offset"""
+        return raw_yaw - self.yaw_offset, raw_pitch - self.pitch_offset
 
     def get_active_monitor(self, screen_name):
         if screen_name in self.screen_centers:

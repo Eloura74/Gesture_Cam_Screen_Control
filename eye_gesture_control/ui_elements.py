@@ -1,8 +1,8 @@
-import cv2
 from config import *
+from ui_utils import draw_rounded_rect, draw_text_centered, FONT_MD
 
 class Button:
-    def __init__(self, text, x, y, w, h, action_code, color_base=C_GLASS, color_hover=C_GLASS_BORDER):
+    def __init__(self, text, x, y, w, h, action_code, color_base=C_BG_LIGHT, color_hover=C_ACCENT_BLUE):
         self.text = text
         self.x = x
         self.y = y
@@ -13,31 +13,30 @@ class Button:
         self.color_hover = color_hover
         self.is_hovered = False
 
-    def draw(self, image):
-        # Couleur selon état
-        bg_color = self.color_hover if self.is_hovered else self.color_base
-        border_color = C_ACCENT_CYAN if self.is_hovered else C_GLASS_BORDER
-        text_color = C_ACCENT_CYAN if self.is_hovered else C_TEXT_MAIN
+    def draw(self, draw):
+        # Couleur dynamique avec effet de "lueur" si survolé
+        main_col = self.color_hover if self.is_hovered else self.color_base
+        border_col = self.color_hover if self.is_hovered else (100, 100, 100, 150)
+        
+        # 1. Fond semi-transparent (Glassmorphism)
+        draw_rounded_rect(draw, (self.x, self.y, self.x + self.w, self.y + self.h), (20, 22, 26, 160), radius=5)
+        
+        # 2. Bordure fine
+        draw.rectangle([self.x, self.y, self.x + self.w, self.y + self.h], outline=border_col, width=1)
 
-        # Fond
-        cv2.rectangle(image, (self.x, self.y), (self.x + self.w, self.y + self.h), bg_color, -1)
-        
-        # Bordure "Tech" (Coins coupés ou lignes)
-        cv2.rectangle(image, (self.x, self.y), (self.x + self.w, self.y + self.h), border_color, 1)
-        
-        # Petite déco "Tech" sur le coté gauche
-        cv2.line(image, (self.x, self.y + 5), (self.x, self.y + self.h - 5), C_ACCENT_CYAN, 2)
+        # 3. Accents de coins (Style Militaire/Sci-fi)
+        l = 10  # Longueur de l'accent
+        # Top-Left
+        draw.line((self.x, self.y, self.x + l, self.y), fill=main_col, width=2)
+        draw.line((self.x, self.y, self.x, self.y + l), fill=main_col, width=2)
+        # Bottom-Right
+        draw.line((self.x + self.w, self.y + self.h, self.x + self.w - l, self.y + self.h), fill=main_col, width=2)
+        draw.line((self.x + self.w, self.y + self.h, self.x + self.w, self.y + self.h - l), fill=main_col, width=2)
 
-        # Texte Centré
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        scale = 0.5
-        thickness = 1
-        (text_w, text_h), _ = cv2.getTextSize(self.text, font, scale, thickness)
-        
-        tx = self.x + (self.w - text_w) // 2
-        ty = self.y + (self.h + text_h) // 2
-        
-        cv2.putText(image, self.text, (tx, ty), font, scale, text_color, thickness, cv2.LINE_AA)
+        # 4. Texte avec légère ombre pour la lisibilité
+        cx = self.x + self.w / 2
+        cy = self.y + self.h / 2
+        draw_text_centered(draw, (cx, cy), self.text, FONT_MD, C_TEXT_WHITE if not self.is_hovered else main_col)
 
     def check_hover(self, mx, my):
         self.is_hovered = (self.x <= mx <= self.x + self.w) and (self.y <= my <= self.y + self.h)

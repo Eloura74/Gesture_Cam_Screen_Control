@@ -2,28 +2,29 @@ import cv2
 import numpy as np
 import time
 import math
+import random
+from PIL import Image, ImageDraw
 from config import *
 from ui_elements import Button
+from ui_utils import *
 
 class UIManager:
     def __init__(self):
-        # Initialisation des boutons (positions dynamiques calculées au draw si besoin, 
-        # mais ici on fixe pour simplifier ou on update dans draw)
-        # On les place en bas de l'écran par défaut
         self.buttons = []
-        # On initialisera les boutons au premier appel de draw car on a besoin de w/h
         self.buttons_initialized = False
+        self.scan_line_y = 0 
+        self.noise_overlay = None
 
     def init_buttons(self, w, h):
-        # Layout: Centré en bas
-        total_w = 3 * BTN_WIDTH + 2 * BTN_MARGIN
+        total_w = 4 * BTN_WIDTH + 3 * BTN_MARGIN
         start_x = (w - total_w) // 2
-        y_pos = h - BTN_HEIGHT - 20
+        y_pos = h - BTN_HEIGHT - 30 
 
         self.buttons = [
             Button("CALIBRATE", start_x, y_pos, BTN_WIDTH, BTN_HEIGHT, "CALIBRATE"),
-            Button("PAUSE APP", start_x + BTN_WIDTH + BTN_MARGIN, y_pos, BTN_WIDTH, BTN_HEIGHT, "PAUSE"),
-            Button("EXIT", start_x + 2 * (BTN_WIDTH + BTN_MARGIN), y_pos, BTN_WIDTH, BTN_HEIGHT, "EXIT", color_hover=C_DANGER)
+            Button("RECENTER", start_x + BTN_WIDTH + BTN_MARGIN, y_pos, BTN_WIDTH, BTN_HEIGHT, "RECENTER", color_hover=C_ACCENT_CYAN),
+            Button("PAUSE APP", start_x + 2 * (BTN_WIDTH + BTN_MARGIN), y_pos, BTN_WIDTH, BTN_HEIGHT, "PAUSE"),
+            Button("EXIT", start_x + 3 * (BTN_WIDTH + BTN_MARGIN), y_pos, BTN_WIDTH, BTN_HEIGHT, "EXIT", color_hover=C_ACCENT_ERR)
         ]
         self.buttons_initialized = True
 
@@ -37,174 +38,186 @@ class UIManager:
         for btn in self.buttons:
             btn.check_hover(x, y)
 
-    def draw_glass_panel(self, img, pt1, pt2, color=C_GLASS, alpha=0.8):
-        """Dessine un panneau style 'verre' semi-transparent"""
-        overlay = img.copy()
-        cv2.rectangle(overlay, pt1, pt2, color, -1)
-        
-        # Bordure fine
-        cv2.rectangle(overlay, pt1, pt2, C_GLASS_BORDER, 1)
-        
-        # Coins Tech
-        x1, y1 = pt1
-        x2, y2 = pt2
-        l = 8
-        c_corn = C_ACCENT_CYAN
-        cv2.line(img, (x1, y1), (x1+l, y1), c_corn, 1)
-        cv2.line(img, (x1, y1), (x1, y1+l), c_corn, 1)
-        cv2.line(img, (x2, y2), (x2-l, y2), c_corn, 1)
-        cv2.line(img, (x2, y2), (x2, y2-l), c_corn, 1)
-        
-        cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+    def draw_tech_border(self, draw, x1, y1, x2, y2, color, label=None):
+        # Fond plus transparent pour éviter de bloquer la vue
+        draw.rectangle([x1, y1, x2, y2], fill=(10, 12, 15, 120))
+        draw.rectangle([x1, y1, x2, y2], outline=(color[0], color[1], color[2], 80), width=1)
+        cl = 15
+        draw.line((x1, y1, x1+cl, y1), fill=color, width=2) 
+        draw.line((x1, y1, x1, y1+cl), fill=color, width=2)
+        draw.line((x2, y2, x2-cl, y2), fill=color, width=2) 
+        draw.line((x2, y2, x2, y2-cl), fill=color, width=2)
+        if label:
+            draw.text((x1 + 5, y1 - 18), label, font=FONT_SM, fill=color)
 
-    def draw_hud_header(self, image, fps):
-        h, w, _ = image.shape
+    def draw_setup_visualizer(self, draw, x, y, w, h, current_screen, yaw, pitch):
+        """Dessine la configuration physique des écrans (Layout Pro)"""
+        
+        # Layout:
+        #       [TOP]
+        # [LEFT][CTR ][RIGHT(V)]
+        
+        r_ctr = (0.33, 0.4, 0.33, 0.3)
+        r_left = (0.0, 0.4, 0.33, 0.3)
+        r_top = (0.33, 0.1, 0.33, 0.3)
+        r_right = (0.66, 0.2, 0.2, 0.5)
+        
+        screens = {
+            "ECRAN_1_GAUCHE": r_left,
+            "ECRAN_2_CENTRE": r_ctr,
+            "ECRAN_3_HAUT": r_top,
+            "ECRAN_4_DROITE": r_right
+        }
+        
+        # Fond du container
+        draw_rounded_rect(draw, (x, y, x+w, y+h), (20, 22, 26, 150), radius=10)
+        draw.text((x+10, y+5), "SYSTEM_LAYOUT", font=FONT_SM, fill=C_TEXT_GREY)
+
+        for name, rect in screens.items():
+            rx, ry, rw, rh = rect
+            sx = x + int(rx * w) + 5
+            sy = y + int(ry * h) + 20
+            sw = int(rw * w) - 5
+            sh = int(rh * h) - 5
+            
+            is_active = (name == current_screen)
+            
+            fill_col = (0, 120, 215, 120) if is_active else (40, 44, 52, 80)
+            border_col = C_ACCENT_CYAN if is_active else C_TEXT_GREY
+            width = 2 if is_active else 1
+            
+            draw.rectangle([sx, sy, sx+sw, sy+sh], fill=fill_col, outline=border_col, width=width)
+            
+            num = name.split("_")[1]
+            draw_text_centered(draw, (sx + sw//2, sy + sh//2), num, FONT_MD, C_TEXT_WHITE if is_active else C_TEXT_GREY)
+            
+            if is_active:
+                nx = np.clip((yaw + 30) / 60, 0, 1)
+                ny = np.clip((-pitch + 20) / 40, 0, 1)
+                gx = sx + int(nx * sw)
+                gy = sy + int(ny * sh)
+                draw.ellipse((gx-2, gy-2, gx+2, gy+2), fill=C_ACCENT_WARN)
+
+    def generate_noise(self, w, h):
+        # Génère une image de bruit statique une seule fois ou rarement pour perf
+        noise = np.random.randint(0, 50, (h, w, 3), dtype=np.uint8)
+        return Image.fromarray(noise).convert("RGBA")
+
+    def draw_ui(self, cv2_image, fps, yaw, pitch, last_log, start_time, current_screen, calib_mode, is_afk, swipe_time, swipe_dir, landmarks=None, gesture=None, pos=None, roll=0, speed=0):
+        # 1. Ajout de bruit/grain sur l'image source (OpenCV) pour l'effet "Caméra de surveillance"
+        # On le fait léger pour ne pas tuer les perfs
+        # noise = np.zeros(cv2_image.shape, dtype=np.uint8)
+        # cv2.randn(noise, 0, 10)
+        # cv2_image = cv2.add(cv2_image, noise)
+        
+        cv2_rgb = cv2.cvtColor(cv2_image, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(cv2_rgb).convert("RGBA")
+        overlay = Image.new("RGBA", pil_img.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        w, h = pil_img.size
+        
         if not self.buttons_initialized:
             self.init_buttons(w, h)
 
-        # Top Bar Background
-        self.draw_glass_panel(image, (0, 0), (w, 45), C_BACKGROUND_DARK, 0.9)
-        
-        # Titre & FPS
-        cv2.putText(image, "EYE.OS // PRO", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, C_ACCENT_CYAN, 2)
-        
-        # Indicateur Pulse
-        pulse = abs(math.sin(time.time() * 2))
-        col_pulse = (0, int(255*pulse), 0)
-        cv2.circle(image, (w-120, 22), 4, col_pulse, -1)
-        cv2.putText(image, f"{int(fps)} FPS", (w-100, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.5, C_TEXT_DIM, 1)
+        # --- SCANLINE ---
+        self.scan_line_y = (self.scan_line_y + 3) % h
+        # Ligne principale
+        draw.line((0, self.scan_line_y, w, self.scan_line_y), fill=(0, 255, 255, 30), width=1)
+        # Traînée
+        draw.rectangle([0, self.scan_line_y-20, w, self.scan_line_y], fill=(0, 255, 255, 5))
 
-        # Dessin des boutons
-        for btn in self.buttons:
-            btn.draw(image)
+        # --- HEADER (Plus discret) ---
+        header_w = 400
+        header_x = (w - header_w) // 2
+        # Juste le texte et une ligne fine
+        draw_text_centered(draw, (w//2, 25), "EYE.OS // NEURAL LINK", FONT_LG, C_TEXT_WHITE)
+        draw.line((header_x, 45, header_x + header_w, 45), fill=C_ACCENT_BLUE, width=1)
+        
+        # FPS & Stats (Top Right)
+        draw.text((w-100, 15), f"FPS: {int(fps)}", font=FONT_SM, fill=C_ACCENT_CYAN)
+        draw.text((w-100, 30), f"LAT: {int(1000/fps if fps>0 else 0)}ms", font=FONT_SM, fill=C_TEXT_GREY)
 
-    def draw_hud_sidebar(self, image, yaw, pitch, last_log_message, start_time):
-        h, w, _ = image.shape
-        # Panneau Gauche: Logs
-        self.draw_glass_panel(image, (10, h-150), (350, h-80), C_GLASS, 0.6)
-        cv2.putText(image, f">> {last_log_message}", (20, h-120), cv2.FONT_HERSHEY_SIMPLEX, 0.45, C_TEXT_MAIN, 1)
+        # --- LAYOUT REORGANISATION ---
         
-        # Timer
-        uptime = int(time.time() - start_time)
-        m, s = divmod(uptime, 60)
-        cv2.putText(image, f"SESSION: {m:02}:{s:02}", (20, h-100), cv2.FONT_HERSHEY_SIMPLEX, 0.4, C_ACCENT_CYAN, 1)
+        # 1. DATA LOG -> TOP LEFT (Pour libérer le bas)
+        # Plus compact
+        log_w = 250
+        log_h = 100
+        self.draw_tech_border(draw, 20, 60, 20 + log_w, 60 + log_h, C_ACCENT_BLUE, "SYSTEM_LOG")
+        draw.text((30, 80), f"> STATUS: ACTIVE", font=FONT_SM, fill=C_ACCENT_CYAN)
+        draw.text((30, 100), f"> {last_log[:28]}", font=FONT_SM, fill=C_TEXT_WHITE)
+        draw.text((30, 125), f"DISPLAY: {current_screen.replace('ECRAN_', '')}", font=FONT_SM, fill=C_TEXT_GREY)
 
-        # Panneau Droite: Radar
-        cx, cy = w-95, h-95
-        self.draw_glass_panel(image, (w-180, h-180), (w-10, h-80), C_GLASS, 0.6)
-        
-        # Radar Crosshair
-        cv2.line(image, (cx-60, cy), (cx+60, cy), C_GLASS_BORDER, 1)
-        cv2.line(image, (cx, cy-60), (cx, cy+60), C_GLASS_BORDER, 1)
-        cv2.circle(image, (cx, cy), 40, C_GLASS_BORDER, 1)
-        
-        # Radar Gaze Dot (Cible)
-        gx = int(cx + (yaw * 1.5))
-        gy = int(cy - (pitch * 1.5))
-        cv2.line(image, (cx, cy), (gx, gy), C_ACCENT_ORANGE, 1)
-        cv2.circle(image, (gx, gy), 3, C_ACCENT_ORANGE, -1)
+        # 2. SETUP VISUALIZER -> TOP RIGHT (Sous les FPS)
+        viz_w = 200
+        viz_h = 140
+        vx = w - viz_w - 20
+        vy = 60 # Alignement haut
+        self.draw_setup_visualizer(draw, vx, vy, viz_w, viz_h, current_screen, yaw, pitch)
 
-    def draw_face_hud(self, image, landmarks, is_afk, calibration_mode):
-        """Dessine un cadre de verrouillage autour du visage"""
-        h, w, _ = image.shape
-        
-        xs = [lm.x for lm in landmarks]
-        ys = [lm.y for lm in landmarks]
-        x1, y1 = int(min(xs)*w), int(min(ys)*h)
-        x2, y2 = int(max(xs)*w), int(max(ys)*h)
-        
-        pad = 25
-        x1, y1 = max(0, x1-pad), max(0, y1-pad)
-        x2, y2 = min(w, x2+pad), min(h, y2+pad)
-        
-        color = C_DANGER if is_afk else C_ACCENT_CYAN
-        if calibration_mode: color = C_ACCENT_ORANGE
-
-        # Coins du cadre (Bracket style)
-        sl = 25 
-        thickness = 2
-        # Haut Gauche
-        cv2.line(image, (x1, y1), (x1+sl, y1), color, thickness)
-        cv2.line(image, (x1, y1), (x1, y1+sl), color, thickness)
-        # Haut Droite
-        cv2.line(image, (x2, y1), (x2-sl, y1), color, thickness)
-        cv2.line(image, (x2, y1), (x2, y1+sl), color, thickness)
-        # Bas Gauche
-        cv2.line(image, (x1, y2), (x1+sl, y2), color, thickness)
-        cv2.line(image, (x1, y2), (x1, y2-sl), color, thickness)
-        # Bas Droite
-        cv2.line(image, (x2, y2), (x2-sl, y2), color, thickness)
-        cv2.line(image, (x2, y2), (x2, y2-sl), color, thickness)
-        
-        # Label au dessus
-        label = "TARGET LOCKED"
-        if is_afk: label = "TARGET LOST"
-        if calibration_mode: label = "CALIBRATING..."
-        
-        cv2.putText(image, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-
-    def draw_status_overlay(self, image, current_screen, calibration_mode, is_afk, last_swipe_time, last_swipe_direction):
-        h, w, _ = image.shape
-        cx, cy = w//2, h//2
-        
-        # Affichage Ecran Actif en Haut
-        screen_label = current_screen.replace("ECRAN_", "").replace("_", " ")
-        self.draw_glass_panel(image, (cx-120, 50), (cx+120, 85), C_GLASS, 0.9)
-        cv2.putText(image, screen_label, (cx-100, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.6, C_ACCENT_CYAN, 1)
-
-        # Mode Calibration
-        if calibration_mode:
-            cv2.rectangle(image, (0,0), (w,h), C_ACCENT_ORANGE, 10)
-            self.draw_glass_panel(image, (cx-200, cy-50), (cx+200, cy+50), C_BACKGROUND_DARK, 0.9)
-            cv2.putText(image, "CALIBRATION MODE", (cx-140, cy-10), cv2.FONT_HERSHEY_SIMPLEX, 1.0, C_ACCENT_ORANGE, 2)
-            cv2.putText(image, "LOOK AT TARGET & PRESS SPACE", (cx-160, cy+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, C_TEXT_MAIN, 1)
-
-        # Mode AFK
-        if is_afk:
-            overlay = image.copy()
-            cv2.rectangle(overlay, (0,0), (w,h), (0,0,20), -1) 
-            cv2.addWeighted(overlay, 0.6, image, 0.4, 0, image)
-            cv2.putText(image, "SYSTEM LOCKED / AFK", (cx-180, cy), cv2.FONT_HERSHEY_SIMPLEX, 1.0, C_DANGER, 2)
+        # --- FACE BRACKETS (Subtils) ---
+        if landmarks:
+            xs = [lm.x for lm in landmarks]
+            ys = [lm.y for lm in landmarks]
+            x1, y1, x2, y2 = int(min(xs)*w), int(min(ys)*h), int(max(xs)*w), int(max(ys)*h)
             
-        # Feedback Swipe
-        if time.time() - last_swipe_time < 1.0 and last_swipe_direction:
-            text = f"SWIPE {last_swipe_direction} >>"
-            self.draw_glass_panel(image, (cx-120, cy+100), (cx+120, cy+140), C_GLASS, 0.9)
-            cv2.putText(image, text, (cx-100, cy+128), cv2.FONT_HERSHEY_SIMPLEX, 0.7, C_SUCCESS, 2)
+            # Marge plus large pour "respirer"
+            pad = 20
+            x1, y1, x2, y2 = x1-pad, y1-pad, x2+pad, y2+pad
+            
+            col = C_ACCENT_ERR if is_afk else (C_ACCENT_WARN if calib_mode else C_ACCENT_CYAN)
+            
+            # Juste les coins (Corners)
+            l = 20
+            t = 2
+            # TL
+            draw.line((x1, y1, x1+l, y1), fill=col, width=t)
+            draw.line((x1, y1, x1, y1+l), fill=col, width=t)
+            # TR
+            draw.line((x2, y1, x2-l, y1), fill=col, width=t)
+            draw.line((x2, y1, x2, y1+l), fill=col, width=t)
+            # BL
+            draw.line((x1, y2, x1+l, y2), fill=col, width=t)
+            draw.line((x1, y2, x1, y2-l), fill=col, width=t)
+            # BR
+            draw.line((x2, y2, x2-l, y2), fill=col, width=t)
+            draw.line((x2, y2, x2, y2-l), fill=col, width=t)
+            
+            # Label discret au dessus
+            draw.text((x1, y1 - 15), "SUBJECT_01" if not is_afk else "LOST", font=FONT_SM, fill=col)
+            
+            # Données à droite du cadre (plus petites)
+            draw.text((x2 + 5, y1), f"Y:{yaw:.0f}", font=FONT_SM, fill=col)
+            draw.text((x2 + 5, y1+12), f"P:{pitch:.0f}", font=FONT_SM, fill=col)
 
-    def draw_gesture_feedback(self, image, gesture, pos, landmarks, roll_angle, scroll_speed=0):
-        if gesture != "NONE":
-            h, w, _ = image.shape
+        # --- GESTURE ---
+        if gesture and gesture != "NONE":
             if pos:
-                cx, cy = int(pos.x * w), int(pos.y * h)
-            else:
-                cx, cy = int(landmarks[0].x * w), int(landmarks[0].y * h)
+                gx, gy = int(pos.x * w), int(pos.y * h)
+                draw.ellipse((gx-20, gy-20, gx+20, gy+20), outline=C_ACCENT_CYAN, width=2)
+                draw.line((gx, gy-25, gx, gy+25), fill=C_ACCENT_CYAN, width=1)
+                draw.line((gx-25, gy, gx+25, gy), fill=C_ACCENT_CYAN, width=1)
+                draw.text((gx+25, gy-10), f"{gesture}", font=FONT_MD, fill=C_ACCENT_CYAN)
 
-            # Petit label flottant
-            cv2.putText(image, gesture, (cx + 20, cy - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, C_ACCENT_CYAN, 1)
+        # --- BOUTONS (Bas) ---
+        for btn in self.buttons:
+            btn.draw(draw)
 
-            CONNECTIONS = [
-                (0,1), (1,2), (2,3), (3,4), (0,5), (5,6), (6,7), (7,8),
-                (5,9), (9,10), (10,11), (11,12), (9,13), (13,14), (14,15), (15,16),
-                (13,17), (17,18), (18,19), (19,20), (0,17)
-            ]
-            for s, e in CONNECTIONS:
-                x1, y1 = int(landmarks[s].x * w), int(landmarks[s].y * h)
-                x2, y2 = int(landmarks[e].x * w), int(landmarks[e].y * h)
-                cv2.line(image, (x1, y1), (x2, y2), C_GLASS_BORDER, 1)
+        # --- VIGNETTE / GRAIN FINAL ---
+        # Vignette simple (assombrissement coins)
+        # On dessine un grand rectangle radial... trop lourd en PIL pur.
+        # On fait juste un cadre sombre dégradé simulé par plusieurs rects transparents sur les bords
+        border_w = 50
+        # Top
+        # draw.rectangle([0, 0, w, border_w], fill=(0,0,0,100))
+        # Bottom
+        # draw.rectangle([0, h-border_w, w, h], fill=(0,0,0,100))
         
-        if gesture == "THREE_FINGERS" and pos:
-            h, w, _ = image.shape
-            cx, cy = int(pos.x * w), int(pos.y * h)
-            color_joy = C_ACCENT_CYAN
-            DEADZONE = 15
-            if abs(roll_angle) > DEADZONE: color_joy = C_SUCCESS
-            
-            cv2.circle(image, (cx, cy), 45, color_joy, 2)
-            
-            rad = math.radians(roll_angle - 90)
-            ex = int(cx + 45 * math.cos(rad))
-            ey = int(cy + 45 * math.sin(rad))
-            cv2.line(image, (cx, cy), (ex, ey), color_joy, 2)
-            
-            cv2.putText(image, f"SCROLL {scroll_speed}", (cx-35, cy-55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_joy, 1)
+        out = Image.alpha_composite(pil_img, overlay)
+        return cv2.cvtColor(np.array(out.convert("RGB")), cv2.COLOR_RGB2BGR)
+
+    def draw_hud_header(self, image, fps): pass 
+    def draw_hud_sidebar(self, image, yaw, pitch, log, start): pass
+    def draw_face_hud(self, image, lm, afk, calib): pass
+    def draw_status_overlay(self, image, screen, calib, afk, st, sd): pass
+    def draw_gesture_feedback(self, image, g, p, lm, r, s=0): pass
