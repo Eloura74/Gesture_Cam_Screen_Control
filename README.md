@@ -1,3 +1,8 @@
+<div align="center">
+  <img src="./Gesture_Cam_Screen_Control_header.png" alt="Bannière Portfolio Informatique" width="100%">
+</div>
+<br>
+
 # Eye & Gesture Control 👁️✋
 
 Une application futuriste qui vous permet de contrôler votre PC (souris, scroll, raccourcis) uniquement avec **vos yeux** et **vos mains**.
